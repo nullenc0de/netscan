@@ -1,92 +1,112 @@
-# NetScan CLI
+# CIDR and Organization Finder
 
-NetScan CLI is a command-line tool for retrieving and analyzing IP address information. It provides detailed subnet and organization data for given IP addresses using various online services.
+## Overview
+
+The CIDR and Organization Finder is a powerful Python script designed to retrieve CIDR (Classless Inter-Domain Routing) blocks and associated organization information for given IP addresses. It utilizes multiple WHOIS data sources to provide comprehensive and accurate results.
 
 ## Features
 
-- Retrieve subnet (CIDR) information for IP addresses
-- Identify organizations associated with IP addresses
-- Group and sort results by organization
-- Support for bulk IP lookups
-- Option for raw JSON output
+- Retrieves CIDR blocks and organization names for IP addresses
+- Uses multiple WHOIS data sources: CYMRU, ARIN, and IPWhois
+- Implements a retry mechanism for resilience against temporary failures
+- Provides asynchronous processing for improved performance
+- Supports rate limiting to avoid overloading WHOIS servers
+- Offers options for searching specific organizations and outputting raw data
+- Groups and sorts results by organization and CIDR
+
+## Prerequisites
+
+- Python 3.7 or higher
+- pip (Python package installer)
 
 ## Installation
 
-### Prerequisites
+1. Clone this repository or download the `ipinfo2.py` script.
 
-- Python 3.6 or higher
-- pip (Python package installer)
+2. Install the required Python packages:
 
-### Steps
-
-1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/netscan-cli.git
-   cd netscan-cli
-   ```
-
-2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
+   pip install aiohttp ipwhois
    ```
 
 3. Make the script executable:
+
    ```
-   chmod +x netscan.py
+   chmod +x ipinfo2.py
    ```
 
 ## Usage
 
+The script reads IP addresses from standard input (stdin) and outputs the results to standard output (stdout). You can pipe the output of other tools into this script.
+
 ### Basic Usage
 
-To use NetScan CLI, pipe a list of IP addresses to the script:
-
 ```
-cat ip_list.txt | python3 netscan.py
+cat ip_list.txt | python3 ipinfo2.py
 ```
 
-This will output the CIDR blocks and associated organizations for each IP address, sorted by organization name.
-
-### Search for a Specific Organization
-
-To search for IP addresses associated with a specific organization:
+or
 
 ```
-cat ip_list.txt | python3 netscan.py --search "Amazon"
+subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 ipinfo2.py
 ```
 
-### Raw JSON Output
+### Options
 
-To get the raw JSON data for each IP:
+- `--search`: Search for a specific organization name (case-insensitive partial match)
+- `--raw`: Output raw JSON data instead of formatted results
 
-```
-cat ip_list.txt | python3 netscan.py --raw
-```
+### Examples
 
-## Output Format
+1. Basic usage:
+   ```
+   echo "8.8.8.8" | python3 ipinfo2.py
+   ```
+
+2. Search for a specific organization:
+   ```
+   cat ip_list.txt | python3 ipinfo2.py --search "Google"
+   ```
+
+3. Output raw JSON data:
+   ```
+   cat ip_list.txt | python3 ipinfo2.py --raw
+   ```
+
+4. Combine with other tools:
+   ```
+   subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 ipinfo2.py
+   ```
+
+## Output
 
 The default output format is:
 
 ```
-CIDR_block (Organization Name)
+CIDR_BLOCK (Organization Name)
 ```
 
-Example:
+For example:
 ```
-65.8.160.0/21 (Amazon.com)
-69.192.139.0/24 (Akamai Technologies)
-80.144.0.0/13 (Deutsche Telekom AG)
+8.8.8.0/24 (Google LLC)
 ```
+
+When using the `--raw` option, the output will be in JSON format, containing detailed information about each IP address.
+
+## Limitations
+
+- The script relies on external WHOIS services, which may have rate limits or occasional downtime.
+- Results may vary depending on the accuracy and completeness of WHOIS data sources.
+- Large numbers of IP addresses may take significant time to process due to rate limiting and API restrictions.
 
 ## Contributing
 
-Contributions to NetScan CLI are welcome! Please feel free to submit a Pull Request.
+Contributions, issues, and feature requests are welcome. Feel free to check [issues page](link-to-your-issues-page) if you want to contribute.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[Specify your license here, e.g., MIT, Apache 2.0, etc.]
 
-## Acknowledgments
+## Disclaimer
 
-- This tool uses data from whois.cymru.com and networktools.nl
-- Thanks to all contributors and users of NetScan CLI
+This tool is for educational and research purposes only. Ensure you comply with all applicable laws and regulations when using this script.
