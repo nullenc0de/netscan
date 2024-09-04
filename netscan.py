@@ -62,9 +62,10 @@ async def arin_whois(ip, semaphore):
                 data["netrange"] = re.findall(r'NetRange:\s*([\d.]+ - [\d.]+)', content)
                 
                 org_patterns = [
+                    r'CustName:\s*(.+)',
+                    r'Customer:\s*(.+)',
                     r'OrgName:\s*(.+)',
                     r'Organization:\s*(.+)',
-                    r'CustName:\s*(.+)',
                     r'NetName:\s*(.+)',
                 ]
                 org_matches = []
@@ -84,6 +85,45 @@ async def arin_whois(ip, semaphore):
                     await asyncio.sleep(RETRY_DELAY)
                 else:
                     print(f"Error querying ARIN WHOIS for {ip}: {str(e)}", file=sys.stderr)
+        return {}
+
+async def networktools_whois(session, ip, semaphore):
+    async with semaphore:
+        for attempt in range(MAX_RETRIES):
+            try:
+                url = f"http://networktools.nl/whois/{ip}"
+                async with session.get(url, timeout=10) as response:
+                    if response.status != 200:
+                        raise Exception(f"HTTP status {response.status}")
+                    content = await response.text()
+                    data = {}
+                    data["cidr"] = re.findall(r'(?:route|CIDR):\s*([\d.]+/\d+)', content)
+                    data["netrange"] = re.findall(r'(?:inetnum|NetRange):\s*([\d.]+ - [\d.]+)', content)
+                    
+                    org_patterns = [
+                        r'CustName:\s*(.+)',
+                        r'Customer:\s*(.+)',
+                        r'(?:org-name|OrgName|owner|descr):\s*(.+)',
+                        r'(?:Organization):\s*(.+)',
+                        r'NetName:\s*(.+)',
+                    ]
+                    org_matches = []
+                    for pattern in org_patterns:
+                        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
+                        org_matches.extend(matches)
+                    
+                    if org_matches:
+                        org_matches = list(set(org_matches))
+                        data["org"] = max(org_matches, key=len).strip()
+                    else:
+                        data["org"] = "Unknown Organization"
+                    
+                    return data
+            except Exception as e:
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    print(f"Error querying networktools.nl for {ip}: {str(e)}", file=sys.stderr)
         return {}
 
 def ipwhois_lookup(ip):
@@ -126,45 +166,66 @@ def is_valid_cidr(cidr):
     except ValueError:
         return False
 
-async def process_ip(ip, org_name, semaphore):
+async def process_ip(session, ip, org_name, semaphore, verbose=False):
     try:
+        if verbose:
+            print(f"Processing IP: {ip}", file=sys.stderr)
         cymru_data = await whois_cymru(ip, semaphore)
         arin_data = await arin_whois(ip, semaphore)
+        networktools_data = await networktools_whois(session, ip, semaphore)
         
-        if cymru_data is None and not arin_data:
+        if cymru_data is None and not arin_data and not networktools_data:
             ipwhois_data = ipwhois_lookup(ip)
         else:
             ipwhois_data = {}
         
-        combined_data = {**cymru_data, **arin_data, **ipwhois_data} if cymru_data else {**arin_data, **ipwhois_data}
+        combined_data = {**cymru_data, **arin_data, **networktools_data, **ipwhois_data}
         
-        if combined_data.get('org') == 'Unknown Organization' and combined_data.get('as_name') != 'N/A':
-            combined_data['org'] = combined_data['as_name']
+        if verbose:
+            print(f"Combined data: {combined_data}", file=sys.stderr)
         
-        combined_data['org'] = clean_org_name(combined_data.get('org', 'Unknown Organization'))
+        results = []
         
-        org = combined_data.get('org', 'Unknown Organization')
+        all_cidrs = sorted(
+            combined_data.get('cidr', []) + [combined_data.get('bgp_prefix', '')],
+            key=lambda x: int(x.split('/')[-1]) if is_valid_cidr(x) else 0,
+            reverse=True
+        )
         
-        if org_name is None or org_name.lower() in org.lower():
-            cidrs = combined_data.get('cidr', []) + [combined_data.get('bgp_prefix', '')]
-            for netrange in combined_data.get('netrange', []):
-                cidrs.extend(netrange_to_cidr(netrange))
-            valid_cidrs = [cidr for cidr in cidrs if is_valid_cidr(cidr)]
-            return [(cidr, org) for cidr in set(valid_cidrs)]
+        if verbose:
+            print(f"All CIDRs: {all_cidrs}", file=sys.stderr)
+        
+        for cidr in all_cidrs:
+            if is_valid_cidr(cidr):
+                if cidr == all_cidrs[0]:  # Most specific CIDR
+                    org = clean_org_name(networktools_data.get('org') or arin_data.get('org') or "Unknown Organization")
+                elif cidr == combined_data.get('bgp_prefix'):
+                    org = f"{clean_org_name(combined_data.get('as_name') or 'Unknown Organization')}, {combined_data.get('country', 'Unknown')}"
+                else:  # Broader CIDRs
+                    org = f"{clean_org_name(cymru_data.get('as_name') or arin_data.get('org') or 'Unknown Organization')}, {combined_data.get('country', 'Unknown')}"
+                
+                results.append((cidr, org))
+                if verbose:
+                    print(f"Added result: {cidr} ({org})", file=sys.stderr)
+        
+        return results
     except Exception as e:
-        print(f"Error processing {ip}: {str(e)}", file=sys.stderr)
+        if verbose:
+            print(f"Error processing {ip}: {str(e)}", file=sys.stderr)
     return []
 
-async def find_subnets(ip_list, org_name=None):
+async def find_subnets(ip_list, org_name=None, verbose=False):
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-    tasks = [process_ip(ip, org_name, semaphore) for ip in ip_list]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async with aiohttp.ClientSession() as session:
+        tasks = [process_ip(session, ip, org_name, semaphore, verbose) for ip in ip_list]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
     return [item for sublist in results if isinstance(sublist, list) for item in sublist]
 
 async def main():
     parser = argparse.ArgumentParser(description="Find CIDR subnets and organizations")
     parser.add_argument("--search", help="Organization name to search for (optional)")
     parser.add_argument("--raw", action="store_true", help="Output raw JSON data")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
     ip_list = [line.strip() for line in sys.stdin]
@@ -173,13 +234,19 @@ async def main():
         print("Please provide IP addresses via stdin.")
         sys.exit(1)
 
+    if args.verbose:
+        print(f"Processing IP list: {ip_list}", file=sys.stderr)
+
     if args.raw:
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        tasks = [process_ip(ip, None, semaphore) for ip in ip_list]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        async with aiohttp.ClientSession() as session:
+            tasks = [process_ip(session, ip, None, semaphore, args.verbose) for ip in ip_list]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
         print(json.dumps([item for sublist in results if isinstance(sublist, list) for item in sublist], indent=2))
     else:
-        results = await find_subnets(ip_list, args.search)
+        results = await find_subnets(ip_list, args.search, args.verbose)
+        if args.verbose:
+            print(f"Final results: {results}", file=sys.stderr)
         
         org_grouped = defaultdict(set)
         for cidr, org in results:
