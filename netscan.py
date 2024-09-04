@@ -172,12 +172,15 @@ async def find_subnets(ip_list, org_name=None, verbose=False):
     async with aiohttp.ClientSession() as session:
         tasks = [process_ip(session, ip, org_name, semaphore, verbose) for ip in ip_list]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-    return [item for sublist in results if isinstance(sublist, list) for item in sublist]
+    
+    if org_name:
+        return [(cidr, org) for sublist in results if isinstance(sublist, list) for cidr, org in sublist if org_name.lower() in org.lower()]
+    else:
+        return [item for sublist in results if isinstance(sublist, list) for item in sublist]
 
 async def main():
     parser = argparse.ArgumentParser(description="Find CIDR subnets and organizations")
     parser.add_argument("--search", help="Organization name to search for (optional)")
-    parser.add_argument("--raw", action="store_true", help="Output raw JSON data")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
@@ -190,25 +193,19 @@ async def main():
     if args.verbose:
         print(f"Processing IP list: {ip_list}", file=sys.stderr)
 
-    if args.raw:
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-        async with aiohttp.ClientSession() as session:
-            tasks = [process_ip(session, ip, None, semaphore, args.verbose) for ip in ip_list]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-        print(json.dumps([item for sublist in results if isinstance(sublist, list) for item in sublist], indent=2))
-    else:
-        results = await find_subnets(ip_list, args.search, args.verbose)
-        if args.verbose:
-            print(f"Final results: {results}", file=sys.stderr)
-        
-        org_grouped = defaultdict(set)
-        for cidr, org in results:
-            org_grouped[org].add(cidr)
-        
-        for org in sorted(org_grouped.keys()):
-            cidrs = sorted(org_grouped[org], key=lambda x: ipaddress.ip_network(x).num_addresses)
-            for cidr in cidrs:
-                print(f"{cidr} ({org})")
+    results = await find_subnets(ip_list, args.search, args.verbose)
+    
+    if args.verbose:
+        print(f"Final results: {results}", file=sys.stderr)
+    
+    org_grouped = defaultdict(set)
+    for cidr, org in results:
+        org_grouped[org].add(cidr)
+    
+    for org in sorted(org_grouped.keys()):
+        cidrs = sorted(org_grouped[org], key=lambda x: ipaddress.ip_network(x).num_addresses)
+        for cidr in cidrs:
+            print(f"{cidr} ({org})")
 
 if __name__ == "__main__":
     asyncio.run(main())
