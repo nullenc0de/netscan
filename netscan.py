@@ -9,8 +9,6 @@ import asyncio
 import aiohttp
 from collections import defaultdict
 from functools import lru_cache
-from ipwhois import IPWhois
-from ipwhois.exceptions import IPDefinedError
 
 MAX_CONCURRENT = 50
 MAX_RETRIES = 3
@@ -40,108 +38,60 @@ async def whois_cymru(ip, semaphore):
                         "allocated": fields[5].strip(),
                         "as_name": fields[6].strip() if len(fields) > 6 else "N/A"
                     }
-        except Exception as e:
-            print(f"Error querying CYMRU for {ip}: {str(e)}", file=sys.stderr)
+        except (asyncio.TimeoutError, OSError):
+            pass
         return None
 
-async def arin_whois(ip, semaphore):
+async def query_rdap(session, ip, base_url, semaphore):
     async with semaphore:
-        for attempt in range(MAX_RETRIES):
-            try:
-                reader, writer = await asyncio.open_connection('whois.arin.net', 43)
-                query = f"{ip}\n".encode()
-                writer.write(query)
-                await writer.drain()
-                response = await asyncio.wait_for(reader.read(), timeout=10)
-                writer.close()
-                await writer.wait_closed()
+        try:
+            url = f"{base_url}{ip}"
+            headers = {"Accept": "application/rdap+json"}
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    return {}
+                data = await response.json()
+                result = {}
+                result["cidr"] = []
+                if "cidr0_cidrs" in data:
+                    for cidr in data["cidr0_cidrs"]:
+                        result["cidr"].append(f"{cidr['v4prefix']}/{cidr['length']}")
+                result["netrange"] = [f"{data.get('startAddress', '')} - {data.get('endAddress', '')}"]
                 
-                content = response.decode()
-                data = {}
-                data["cidr"] = re.findall(r'CIDR:\s*([\d.]+/\d+)', content)
-                data["netrange"] = re.findall(r'NetRange:\s*([\d.]+ - [\d.]+)', content)
-                
-                org_patterns = [
-                    r'CustName:\s*(.+)',
-                    r'Customer:\s*(.+)',
-                    r'OrgName:\s*(.+)',
-                    r'Organization:\s*(.+)',
-                    r'NetName:\s*(.+)',
-                ]
-                org_matches = []
-                for pattern in org_patterns:
-                    matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
-                    org_matches.extend(matches)
-                
-                if org_matches:
-                    org_matches = list(set(org_matches))
-                    data["org"] = max(org_matches, key=len).strip()
-                else:
-                    data["org"] = "Unknown Organization"
-                
-                return data
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_DELAY)
-                else:
-                    print(f"Error querying ARIN WHOIS for {ip}: {str(e)}", file=sys.stderr)
-        return {}
-
-async def networktools_whois(session, ip, semaphore):
-    async with semaphore:
-        for attempt in range(MAX_RETRIES):
-            try:
-                url = f"http://networktools.nl/whois/{ip}"
-                async with session.get(url, timeout=10) as response:
-                    if response.status != 200:
-                        raise Exception(f"HTTP status {response.status}")
-                    content = await response.text()
-                    data = {}
-                    data["cidr"] = re.findall(r'(?:route|CIDR):\s*([\d.]+/\d+)', content)
-                    data["netrange"] = re.findall(r'(?:inetnum|NetRange):\s*([\d.]+ - [\d.]+)', content)
-                    
-                    org_patterns = [
-                        r'CustName:\s*(.+)',
-                        r'Customer:\s*(.+)',
-                        r'(?:org-name|OrgName|owner|descr):\s*(.+)',
-                        r'(?:Organization):\s*(.+)',
-                        r'NetName:\s*(.+)',
-                    ]
-                    org_matches = []
-                    for pattern in org_patterns:
-                        matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
-                        org_matches.extend(matches)
-                    
-                    if org_matches:
-                        org_matches = list(set(org_matches))
-                        data["org"] = max(org_matches, key=len).strip()
+                if "entities" in data:
+                    for entity in data["entities"]:
+                        if "registrant" in entity.get("roles", []):
+                            result["org"] = entity.get("handle", "Unknown Organization")
+                            break
                     else:
-                        data["org"] = "Unknown Organization"
-                    
-                    return data
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_DELAY)
+                        result["org"] = data.get("name", "Unknown Organization")
                 else:
-                    print(f"Error querying networktools.nl for {ip}: {str(e)}", file=sys.stderr)
+                    result["org"] = data.get("name", "Unknown Organization")
+                
+                result["raw_data"] = data  # Include the raw data
+                return result
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            pass
         return {}
 
-def ipwhois_lookup(ip):
-    try:
-        obj = IPWhois(ip)
-        result = obj.lookup_rdap(depth=1)
-        return {
-            "ip": ip,
-            "asn": result.get('asn', 'N/A'),
-            "bgp_prefix": result.get('network', {}).get('cidr', 'N/A'),
-            "country": result.get('asn_country_code', 'N/A'),
-            "org": result.get('network', {}).get('name', 'N/A')
-        }
-    except IPDefinedError:
-        return {"ip": ip, "org": "Private IP"}
-    except Exception as e:
-        print(f"Error in ipwhois lookup for {ip}: {str(e)}", file=sys.stderr)
-        return None
+async def query_rir(session, ip, semaphore):
+    rir_apis = [
+        "https://rdap.arin.net/registry/ip/",
+        "https://rdap.db.ripe.net/ip/",
+        "https://rdap.apnic.net/ip/",
+        "https://rdap.lacnic.net/rdap/ip/",
+        "https://rdap.afrinic.net/rdap/ip/"
+    ]
+    
+    for base_url in rir_apis:
+        try:
+            data = await query_rdap(session, ip, base_url, semaphore)
+            if data:
+                return data
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            pass
+    
+    return {}
 
 @lru_cache(maxsize=1024)
 def clean_org_name(org_name):
@@ -171,15 +121,9 @@ async def process_ip(session, ip, org_name, semaphore, verbose=False):
         if verbose:
             print(f"Processing IP: {ip}", file=sys.stderr)
         cymru_data = await whois_cymru(ip, semaphore)
-        arin_data = await arin_whois(ip, semaphore)
-        networktools_data = await networktools_whois(session, ip, semaphore)
+        rir_data = await query_rir(session, ip, semaphore)
         
-        if cymru_data is None and not arin_data and not networktools_data:
-            ipwhois_data = ipwhois_lookup(ip)
-        else:
-            ipwhois_data = {}
-        
-        combined_data = {**cymru_data, **arin_data, **networktools_data, **ipwhois_data}
+        combined_data = {**cymru_data, **rir_data} if cymru_data else rir_data
         
         if verbose:
             print(f"Combined data: {combined_data}", file=sys.stderr)
@@ -187,23 +131,32 @@ async def process_ip(session, ip, org_name, semaphore, verbose=False):
         results = []
         
         all_cidrs = sorted(
-            combined_data.get('cidr', []) + [combined_data.get('bgp_prefix', '')],
+            combined_data.get('cidr', []) + [combined_data.get('bgp_prefix', '')] + netrange_to_cidr(combined_data.get('netrange', [''])[0]),
             key=lambda x: int(x.split('/')[-1]) if is_valid_cidr(x) else 0,
             reverse=True
         )
+        all_cidrs = [cidr for cidr in all_cidrs if is_valid_cidr(cidr)]
         
         if verbose:
             print(f"All CIDRs: {all_cidrs}", file=sys.stderr)
         
         for cidr in all_cidrs:
-            if is_valid_cidr(cidr):
-                if cidr == all_cidrs[0]:  # Most specific CIDR
-                    org = clean_org_name(networktools_data.get('org') or arin_data.get('org') or "Unknown Organization")
-                elif cidr == combined_data.get('bgp_prefix'):
-                    org = f"{clean_org_name(combined_data.get('as_name') or 'Unknown Organization')}, {combined_data.get('country', 'Unknown')}"
-                else:  # Broader CIDRs
-                    org = f"{clean_org_name(cymru_data.get('as_name') or arin_data.get('org') or 'Unknown Organization')}, {combined_data.get('country', 'Unknown')}"
-                
+            org = None
+            if cidr == all_cidrs[0]:  # Most specific CIDR
+                org = next((entity['vcardArray'][1][1][3] for entity in combined_data.get('raw_data', {}).get('entities', []) 
+                            if 'registrant' in entity.get('roles', [])), None)
+                if not org:
+                    org = combined_data.get('org', "Unknown Organization")
+            elif cidr == combined_data.get('bgp_prefix'):
+                as_name = clean_org_name(combined_data.get('as_name', ''))
+                country = combined_data.get('country', '')
+                org = f"{as_name} ({country})" if as_name and country else as_name or country or "Unknown Organization"
+            else:  # Broader CIDRs
+                as_name = clean_org_name(cymru_data.get('as_name') or combined_data.get('org', ''))
+                country = combined_data.get('country', '')
+                org = f"{as_name} ({country})" if as_name and country else as_name or country or "Unknown Organization"
+            
+            if org:
                 results.append((cidr, org))
                 if verbose:
                     print(f"Added result: {cidr} ({org})", file=sys.stderr)
