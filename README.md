@@ -21,7 +21,7 @@ The CIDR and Organization Finder is a powerful Python script designed to retriev
 
 ## Installation
 
-1. Clone this repository or download the `ipinfo2.py` script.
+1. Clone this repository or download the `netscan.py` script.
 
 2. Install the required Python packages:
 
@@ -32,7 +32,7 @@ The CIDR and Organization Finder is a powerful Python script designed to retriev
 3. Make the script executable:
 
    ```
-   chmod +x ipinfo2.py
+   chmod +x netscan.py
    ```
 
 ## Usage
@@ -42,13 +42,13 @@ The script reads IP addresses from standard input (stdin) and outputs the result
 ### Basic Usage
 
 ```
-cat ip_list.txt | python3 ipinfo2.py
+cat ip_list.txt | python3 netscan.py
 ```
 
 or
 
 ```
-subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 ipinfo2.py
+subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 netscan.py
 ```
 
 ### Options
@@ -60,12 +60,12 @@ subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 ipinfo2.
 
 1. Basic usage:
    ```
-   echo "8.8.8.8" | python3 ipinfo2.py
+   echo "8.8.8.8" | python3 netscan.py
    ```
 
 2. Search for a specific organization:
    ```
-   cat ip_list.txt | python3 ipinfo2.py --search "Google"
+   cat ip_list.txt | python3 netscan.py --search "Google"
    ```
 
 3. Output raw JSON data:
@@ -75,7 +75,7 @@ subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 ipinfo2.
 
 4. Combine with other tools:
    ```
-   subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 ipinfo2.py
+   subfinder -silent -d example.com | dnsx -silent -a -resp-only | python3 netscan.py
    ```
 
 ## Output
