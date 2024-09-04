@@ -91,6 +91,9 @@ For example:
 8.8.8.0/24 (Google LLC)
 ```
 
+![image](https://github.com/user-attachments/assets/d8096759-dd8d-4bfd-a26b-765831cb0a4f)
+
+
 When using the `--raw` option, the output will be in JSON format, containing detailed information about each IP address.
 
 ## Limitations
